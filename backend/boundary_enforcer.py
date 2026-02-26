@@ -28,6 +28,7 @@ def enforce_boundaries(
     alignments: list[AlignmentResult],
     audio_duration: float,
     sample_rate: int,
+    wav_path: str | None = None,
 ) -> list[SegmentBoundary]:
     """Enforce exact boundary rules on alignment results.
 
@@ -37,11 +38,13 @@ def enforce_boundaries(
     - No overlaps between segments
     - No gaps between segments
     - All boundaries are sample-accurate
+    - Cuts land in silence gaps (when wav_path is provided)
 
     Args:
         alignments: Raw alignment results from the aligner.
         audio_duration: Total audio duration in seconds.
         sample_rate: Audio sample rate in Hz.
+        wav_path: Path to WAV file for silence-aware snapping (optional).
 
     Returns:
         List of SegmentBoundary with enforced boundaries.
@@ -69,6 +72,14 @@ def enforce_boundaries(
         boundaries_samples.append(mid_sample)
 
     boundaries_samples.append(total_samples)  # B[N]
+
+    # Snap boundaries to silence gaps in the actual audio
+    if wav_path:
+        from silence_detector import snap_boundaries_to_silence
+        boundaries_samples = snap_boundaries_to_silence(
+            boundaries_samples, wav_path, total_samples, sample_rate,
+            search_radius_sec=2.0,
+        )
 
     # Build segments
     segments: list[SegmentBoundary] = []

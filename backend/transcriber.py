@@ -1,14 +1,13 @@
 """
-Transcriber — uses OpenAI Whisper to produce word-level timestamps.
+Transcriber — uses faster-whisper (CTranslate2) for ~4x faster transcription
+with word-level timestamps.
 """
 
 import subprocess
-import tempfile
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
-import whisper
+from faster_whisper import WhisperModel
 
 
 @dataclass
@@ -18,19 +17,18 @@ class WordTimestamp:
     end: float
 
 
-def _convert_to_wav_16k(input_path: str, output_path: str) -> None:
-    """Convert any supported audio to WAV mono 16kHz using FFmpeg."""
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-ac", "1",
-        "-ar", "16000",
-        "-sample_fmt", "s16",
-        output_path,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg conversion failed: {result.stderr}")
+# Cache model in memory so it's loaded only once across jobs
+_model_cache: dict[str, WhisperModel] = {}
+
+
+def _get_model(model_name: str) -> WhisperModel:
+    if model_name not in _model_cache:
+        _model_cache[model_name] = WhisperModel(
+            model_name,
+            device="cpu",
+            compute_type="int8",  # fastest on CPU
+        )
+    return _model_cache[model_name]
 
 
 def get_audio_duration(audio_path: str) -> float:
@@ -67,41 +65,36 @@ def get_sample_rate(audio_path: str) -> int:
 def transcribe(audio_path: str, model_name: str = "base") -> list[WordTimestamp]:
     """Transcribe audio and return word-level timestamps.
 
+    Uses faster-whisper (CTranslate2) for significantly faster inference.
+
     Args:
         audio_path: Path to audio file (any supported format).
-        model_name: Whisper model size (tiny, base, small, medium, large).
+        model_name: Whisper model size (tiny, base, small, medium, large-v3).
 
     Returns:
         List of WordTimestamp objects sorted by start time.
     """
-    # Convert to WAV 16kHz for Whisper
-    tmp_dir = tempfile.mkdtemp()
-    wav_path = os.path.join(tmp_dir, "audio.wav")
+    model = _get_model(model_name)
 
-    try:
-        _convert_to_wav_16k(audio_path, wav_path)
+    segments_iter, info = model.transcribe(
+        audio_path,
+        word_timestamps=True,
+        vad_filter=True,          # skip silence regions (faster)
+        vad_parameters=dict(
+            min_silence_duration_ms=300,
+        ),
+        beam_size=5,              # good accuracy without being slow
+        language="es",            # skip language detection
+    )
 
-        model = whisper.load_model(model_name)
-        result = model.transcribe(
-            wav_path,
-            word_timestamps=True,
-            verbose=False,
-        )
-
-        words: list[WordTimestamp] = []
-        for segment in result.get("segments", []):
-            for w in segment.get("words", []):
+    words: list[WordTimestamp] = []
+    for segment in segments_iter:
+        if segment.words:
+            for w in segment.words:
                 words.append(WordTimestamp(
-                    word=w["word"].strip(),
-                    start=w["start"],
-                    end=w["end"],
+                    word=w.word.strip(),
+                    start=w.start,
+                    end=w.end,
                 ))
 
-        return words
-
-    finally:
-        # Clean up temp file
-        if os.path.exists(wav_path):
-            os.remove(wav_path)
-        if os.path.exists(tmp_dir):
-            os.rmdir(tmp_dir)
+    return words

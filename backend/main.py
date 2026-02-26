@@ -103,14 +103,14 @@ def process_job(job_id: str):
         alignments = align_blocks(blocks, words, audio_duration)
         _update_job(job_id, progress=70)
 
-        # Stage 4: Enforce boundaries
-        segments = enforce_boundaries(alignments, audio_duration, sample_rate)
-        invariants = validate_boundaries(segments, audio_duration, sample_rate)
-        _update_job(job_id, progress=75, invariants=invariants)
-
-        # Stage 5: Convert and cut audio
-        _update_job(job_id, status=JobStatus.CUTTING, progress=80)
+        # Stage 4: Convert to WAV for analysis + cutting
+        _update_job(job_id, status=JobStatus.CUTTING, progress=72)
         convert_to_wav_pcm(audio_path, wav_path, sample_rate=sample_rate)
+
+        # Stage 5: Enforce boundaries (with silence-aware snapping)
+        segments = enforce_boundaries(alignments, audio_duration, sample_rate, wav_path=wav_path)
+        invariants = validate_boundaries(segments, audio_duration, sample_rate)
+        _update_job(job_id, progress=80, invariants=invariants)
         segment_files = cut_segments(wav_path, segments, segments_dir, output_format="wav")
         _update_job(job_id, progress=90)
 
